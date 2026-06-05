@@ -1,0 +1,24 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# --- 虚拟环境 ---
+.venv/
+venv/
+env/
+
+# --- PyInstaller 产物 ---
+build/
+dist/
+*.spec
+
+# --- 编辑器 / 系统 ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+upx/
