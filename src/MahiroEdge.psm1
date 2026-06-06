@@ -162,12 +162,18 @@ function New-GroupIconBytes {
 }
 
 # ============================================================
-# 发现所有 Edge 的 msedge.exe / msedge_proxy.exe（多策略，去重）
-# 策略：注册表 App Paths / StartMenuInternet + 常见安装根（含 per-user）
-# 对每个安装根，既补丁顶层 exe，也补丁每个版本号子目录里的 exe。
+# 发现所有需要补丁的 Edge exe（多策略，去重）。
+# 目标名：浏览器主程序 / app 代理 / PWA 启动器（均会在任务栏/快捷方式露脸）。
+# 安装根：注册表线索 + 三大产品线（Edge / EdgeCore / EdgeWebView）的固定根，
+#   每个产品线同时覆盖 Program Files、Program Files (x86) 与 per-user LocalAppData。
+# 现代 Edge（148+）把真正的浏览器二进制拆到了 EdgeCore\<ver> 与 EdgeCore\Optimized，
+#   顶层 Edge\Application\msedge.exe 仅作转发——故必须连 EdgeCore 一起补丁。
+# 子目录扫描：不再只认纯版本号目录（会漏掉 'Optimized'），改为扫描“任何含目标 exe
+#   的直接子目录”，但跳过 Edge 留下的 *.old 退役版本目录。
 # ============================================================
 function Find-EdgeExecutables {
-    $targetNames = @('msedge.exe', 'msedge_proxy.exe')  # 范围：浏览器 + app 模式，不含 WebView2
+    # 范围：浏览器 + app 模式 + PWA 启动器。仍不含 msedgewebview2.exe 本体（无独立任务栏图标需求）。
+    $targetNames = @('msedge.exe', 'msedge_proxy.exe', 'msedge_pwa_launcher.exe')
     $roots = New-Object System.Collections.Generic.HashSet[string]
 
     # --- 1) 注册表线索 ---
@@ -187,15 +193,18 @@ function Find-EdgeExecutables {
         } catch {}
     }
 
-    # --- 2) 常见固定安装根 ---
+    # --- 2) 常见固定安装根（三条产品线 × 三处安装位置）---
+    $pf   = $env:ProgramFiles
+    $pf86 = ${env:ProgramFiles(x86)}
+    $lad  = $env:LocalAppData
     $fixed = @(
-        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application",
-        "$env:ProgramFiles\Microsoft\Edge\Application",
-        "$env:LocalAppData\Microsoft\Edge\Application"
+        "$pf86\Microsoft\Edge\Application",        "$pf\Microsoft\Edge\Application",        "$lad\Microsoft\Edge\Application",
+        "$pf86\Microsoft\EdgeCore",                "$pf\Microsoft\EdgeCore",                "$lad\Microsoft\EdgeCore",
+        "$pf86\Microsoft\EdgeWebView\Application", "$pf\Microsoft\EdgeWebView\Application", "$lad\Microsoft\EdgeWebView\Application"
     )
     foreach ($f in $fixed) { if ($f -and (Test-Path $f)) { [void]$roots.Add($f) } }
 
-    # --- 3) 在每个根下收集 exe：顶层 + 版本号子目录 ---
+    # --- 3) 在每个根下收集 exe：顶层 + 任意含目标 exe 的直接子目录（跳过 *.old）---
     $found = New-Object System.Collections.Generic.HashSet[string]
     foreach ($root in $roots) {
         foreach ($name in $targetNames) {
@@ -203,11 +212,11 @@ function Find-EdgeExecutables {
             if (Test-Path $top) { [void]$found.Add((Resolve-Path $top).Path) }
         }
         try {
-            $verDirs = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
-                       Where-Object { $_.Name -match '^\d+(\.\d+)+$' }
-            foreach ($vd in $verDirs) {
+            $subDirs = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+                       Where-Object { $_.Name -notmatch '\.old$' }   # 退役版本目录不补丁
+            foreach ($sd in $subDirs) {
                 foreach ($name in $targetNames) {
-                    $vp = Join-Path $vd.FullName $name
+                    $vp = Join-Path $sd.FullName $name
                     if (Test-Path $vp) { [void]$found.Add((Resolve-Path $vp).Path) }
                 }
             }
@@ -426,14 +435,15 @@ function Invoke-Restore {
     }
 
     $exes = Find-EdgeExecutables
-    # 也扫描备份文件本身（防 exe 已被删但备份残留）
-    $restored = 0; $missing = 0; $failed = 0
+    $restored = 0; $missing = 0; $failed = 0; $orphanCleaned = 0
+    $handledBaks = New-Object System.Collections.Generic.HashSet[string]
     foreach ($exe in $exes) {
         $bak = "$exe.mahiro.bak"
         try {
             if (Test-Path $bak) {
                 Copy-Item -LiteralPath $bak -Destination $exe -Force
                 Remove-Item -LiteralPath $bak -Force
+                [void]$handledBaks.Add($bak.ToLowerInvariant())
                 Write-Host "[还原] $exe"
                 $restored++
             } else {
@@ -443,6 +453,36 @@ function Invoke-Restore {
             Write-Warning "[还原失败] $exe : $($_.Exception.Message)"
             $failed++
         }
+    }
+
+    # --- 扫描残留 .bak（兑现“也扫描备份文件本身”的承诺）---
+    # 在所有发现到的 exe 的父目录里找 *.mahiro.bak：对应 exe 还在就还原（防被发现逻辑漏掉），
+    # exe 已不在（版本目录被 Edge 更新清掉一半等）则删除孤儿备份，避免常驻垃圾。
+    $bakDirs = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($exe in $exes) { [void]$bakDirs.Add((Split-Path -Parent $exe)) }
+    foreach ($dir in $bakDirs) {
+        try {
+            Get-ChildItem -Path $dir -Filter '*.mahiro.bak' -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $bak = $_.FullName
+                if ($handledBaks.Contains($bak.ToLowerInvariant())) { return }
+                $exe = $bak -replace '\.mahiro\.bak$', ''
+                try {
+                    if (Test-Path -LiteralPath $exe) {
+                        Copy-Item -LiteralPath $bak -Destination $exe -Force
+                        Remove-Item -LiteralPath $bak -Force
+                        Write-Host "[还原] $exe"
+                        $restored++
+                    } else {
+                        Remove-Item -LiteralPath $bak -Force
+                        Write-Host "[清理孤儿备份] $bak"
+                        $orphanCleaned++
+                    }
+                } catch {
+                    Write-Warning "[还原失败] $exe : $($_.Exception.Message)"
+                    $failed++
+                }
+            }
+        } catch {}
     }
 
     # --- 还原每配置文件 Edge Profile.ico ---
@@ -472,7 +512,7 @@ function Invoke-Restore {
     }
 
     return [pscustomobject]@{
-        Restored = $restored; NoBackup = $missing; Failed = $failed
+        Restored = $restored; NoBackup = $missing; Failed = $failed; OrphanCleaned = $orphanCleaned
         ProfileRestored = $profRestored; ProfileFallback = $profFallback
         ProfileNoBackup = $profMissing; ProfileFailed = $profFailed
     }
