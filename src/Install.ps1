@@ -25,7 +25,7 @@ function Assert-Admin {
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
     if (-not $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "需要管理员权限。请右键 Install.cmd 选择「以管理员身份运行」。"
+        throw "需要管理员权限。请右键 Install.cmd 选择「以管理员身份运行」喵。"
     }
 }
 
@@ -42,7 +42,7 @@ if (-not $Variant) {
     # 仅在交互式会话弹菜单；非交互（GUI 传参/管道）静默回退 default，绝不卡住。
     if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
         Write-Host ""
-        Write-Host "请选择呆毛图标变体:" -ForegroundColor Yellow
+        Write-Host "请选择呆毛图标变体喵:" -ForegroundColor Yellow
         Write-Host "  1) 原版角度（与原版 Edge 图标一致）  [默认]"
         Write-Host "  2) 呆毛角度（角度更符合呆毛特征）"
         $choice = Read-Host "输入 1 或 2，直接回车选 1"
@@ -59,7 +59,7 @@ Write-Host "[1/6] 暂存文件到 $base ..."
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 
 $icoSrc = Join-Path $repo $icoFileName
-if (-not (Test-Path $icoSrc)) { throw "找不到图标文件: $icoSrc" }
+if (-not (Test-Path $icoSrc)) { throw "找不到图标文件喵: $icoSrc" }
 # 目标写死稳定名（不随变体变）：Apply.ps1 / Uninstall.ps1 只认这个名字。
 Copy-Item -LiteralPath $icoSrc                 -Destination (Join-Path $base 'oyama-mahiro-ahoge.ico') -Force
 Copy-Item -LiteralPath (Join-Path $here 'MahiroEdge.psm1')  -Destination (Join-Path $base 'MahiroEdge.psm1')   -Force
@@ -99,7 +99,7 @@ foreach ($pn in $edgeProcs) {
 Start-Sleep -Milliseconds 800
 
 # --- 3) 打补丁 ---
-Write-Host "[3/6] 改写 Edge 图标资源 ..."
+Write-Host "[3/6] 改写 Edge 图标资源喵 ..."
 # 边界情形预判：补丁前先看是否所有 exe 早已是呆毛（重复安装）。用 -Force 仍会重写，
 # 但据此给用户一句明确的“本来就是呆毛”提示，而不是默默重跑。
 $preExes = Find-EdgeExecutables
@@ -107,10 +107,10 @@ $preAll  = ($preExes.Count -gt 0) -and -not ($preExes | Where-Object { -not (Tes
 $r = Invoke-Patch -IcoPath $icoPath -Force
 Write-Host ("补丁={0} 跳过={1} 失败={2} 共发现={3}" -f $r.Patched, $r.Skipped, $r.Failed, $r.Total) -ForegroundColor Cyan
 if ($preAll) {
-    Write-Host "（检测到 Edge 图标此前已是呆毛，本次为重新确保应用——这是正常的幂等行为。）" -ForegroundColor Yellow
+    Write-Host "（检测到 Edge 图标此前已是呆毛，本次为重新确保应用——这是正常的幂等行为喵。）" -ForegroundColor Yellow
 }
 if ($r.Patched -eq 0 -and $r.Failed -gt 0) {
-    Write-Warning "没有任何 exe 被成功补丁。请确认 Edge 已完全关闭后重试。"
+    Write-Warning "没有任何 exe 被成功补丁。请确认 Edge 已完全关闭后重试喵。"
 }
 
 # --- 4) 注册自愈计划任务（登录时 + 每日 03:00），SYSTEM + 最高权限 ---
@@ -132,7 +132,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action `
 # 为什么是“当前用户”而非 SYSTEM：session 0 的 SYSTEM 进程无法向用户桌面窗口发
 # WM_SETICON。本任务在用户登录会话内常驻，给每个 Edge 窗口实时打上呆毛运行时图标，
 # 修好「任务栏展开标签」「flutter run 起的 app 窗口」等 exe 资源补丁碰不到的场景。
-Write-Host "[5/6] 注册运行时图标任务 '$runtimeTaskName' 并启动 ..."
+Write-Host "[5/6] 注册运行时图标任务 '$runtimeTaskName' 并启动喵 ..."
 try {
     $curUser = "$env:USERDOMAIN\$env:USERNAME"
     # 经 wscript.exe 拉起 VBS 垫片，再由垫片隐藏式启动 enforcer。wscript 非控制台程序，
@@ -155,7 +155,7 @@ try {
 }
 
 # --- 6) 刷新图标缓存，立即可见 ---
-Write-Host "[6/6] 刷新图标缓存 ..."
+Write-Host "[6/6] 刷新图标缓存喵 ..."
 Clear-IconCache -RestartExplorer
 
-Write-Host "安装完成！桌面/任务栏的 Edge 图标现在应是粉色呆毛。" -ForegroundColor Green
+Write-Host "安装完成喵！桌面/任务栏的 Edge 图标现在应是粉色呆毛～" -ForegroundColor Green

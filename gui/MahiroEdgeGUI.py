@@ -18,11 +18,11 @@ import queue
 import tkinter.font as tkfont
 
 # 必须在导入 ctk 和创建示例之前调用！
-if sys.platform.startswith("win"):
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
+# if sys.platform.startswith("win"):
+#     try:
+#         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+#     except Exception:
+#         pass
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -371,7 +371,7 @@ class MahiroEdgeApp(ctk.CTk):
             font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"), text_color=PINK_TEXT,
         ).pack(fill="x", pady=(4, 2))
         ctk.CTkLabel(
-            body, text="若有正在运行的 Edge 浏览器和文件资源管理器窗口，请先关闭，避免丢失数据", anchor="w",
+            body, text="若有正在运行的 Edge 浏览器和文件资源管理器窗口，请先关闭，避免丢失数据喵", anchor="w",
             font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=PINK_SUBTLE,
         ).pack(fill="x", pady=(0, 12))
 
@@ -532,7 +532,7 @@ class MahiroEdgeApp(ctk.CTk):
 
         # 版本号
         ctk.CTkLabel(
-            body, text="v1.0.1", 
+            body, text="v1.0.2", 
             font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"), 
             text_color=PINK_TEXT
         ).pack(pady=(12, 2))
@@ -546,7 +546,7 @@ class MahiroEdgeApp(ctk.CTk):
 
         # 项目仓库链接（加下划线，模拟超链接效果）
         link_lbl = ctk.CTkLabel(
-            body, text="🔗 访问 GitHub 项目仓库", 
+            body, text="🔗 访问 GitHub 项目仓库喵", 
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, underline=True), 
             text_color=EYE_DEEP, cursor="hand2"
         )
@@ -566,8 +566,8 @@ class MahiroEdgeApp(ctk.CTk):
         row.grid_columnconfigure(1, weight=1)
 
         specs = [
-            ("default", ICO_DEFAULT, "原版角度", "与原版 Edge 一致"),
-            ("rotated", ICO_ROTATED, "呆毛角度", "更符合呆毛特征"),
+            ("default", ICO_DEFAULT, "原版角度", "与原版 Edge 一致喵"),
+            ("rotated", ICO_ROTATED, "呆毛角度", "更符合呆毛特征喵"),
         ]
         self._variant_thumbs = []  # 持有引用防被 GC
         for col, (name, ico, label, sub) in enumerate(specs):
@@ -685,7 +685,7 @@ class MahiroEdgeApp(ctk.CTk):
 
         # 安装时把选中的变体作为 -Variant 传给 Install.ps1；卸载无需变体。
         extra_args = [("Variant", self._variant)] if with_variant else []
-        self._append_log(f"=== 开始{verb} ===")
+        self._append_log(f"=== 开始{verb}喵 ===")
         t = threading.Thread(
             target=run_powershell, args=(ps1, self.queue, extra_args), daemon=True
         )
@@ -747,8 +747,8 @@ class MahiroEdgeApp(ctk.CTk):
             self._animate_progress()
         self._set_busy(False)
         if returncode == 0:
-            self._append_log(f"=== 任务完成（退出码 0）===")
-            self._append_log(f"=== 请稍等，文件资源管理器重启可能需要一点时间 ===")
+            self._append_log(f"=== 任务完成喵（退出码 0）===")
+            self._append_log(f"=== 主人请稍等，任务栏重启可能需要一点时间喵～ ===")
         else:
             self._append_log(f"=== 任务失败（退出码 {returncode}）===")
 

@@ -13,7 +13,7 @@ function Assert-Admin {
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
     if (-not $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "需要管理员权限。请右键 Uninstall.cmd 选择『以管理员身份运行』。"
+        throw "需要管理员权限。请右键 Uninstall.cmd 选择「以管理员身份运行」喵。"
     }
 }
 
@@ -21,7 +21,7 @@ Write-Host "=== 绪山真寻 Edge 图标卸载 ===" -ForegroundColor Magenta
 Assert-Admin
 
 # --- 1) 停止常驻运行时任务并删除两个计划任务 ---
-Write-Host "[1/4] 删除计划任务 ..."
+Write-Host "[1/4] 删除计划任务喵 ..."
 # 先停掉常驻 enforcer（否则它会在我们还原后又把窗口图标改回呆毛）。
 Stop-ScheduledTask  -TaskName $runtimeTaskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $runtimeTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -42,7 +42,7 @@ foreach ($pn in $edgeProcs) {
 Start-Sleep -Milliseconds 800
 
 # --- 3) 从备份还原 ---
-Write-Host "[3/4] 恢复原版 Edge 图标 ..."
+Write-Host "[3/4] 恢复原版 Edge 图标喵 ..."
 # 优先用常驻模块；若已被删，退回项目内模块
 $srcDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not (Test-Path $module)) {
@@ -65,15 +65,15 @@ if (Test-Path $module) {
         $r.ProfileRestored, $r.ProfileFallback, $r.ProfileNoBackup, $r.ProfileFailed) -ForegroundColor Cyan
     # 边界情形：什么都没还原（exe 没补丁、配置图标也没换）——多半本来就是原版。如实告知，不假装“已恢复”。
     if ($r.Restored -eq 0 -and $r.ProfileRestored -eq 0 -and $r.ProfileFallback -eq 0) {
-        Write-Host "未发现任何呆毛补丁痕迹：Edge 图标当前已是原版，无需还原。" -ForegroundColor Yellow
+        Write-Host "未发现任何呆毛补丁痕迹：Edge 图标当前已是原版，无需还原喵～" -ForegroundColor Yellow
         $script:NothingRestored = $true
     }
     if (-not $fallbackIco) {
-        Write-Warning "未找到兜底原版图标 '$icoName'；没有 .bak 的配置文件图标无法还原。"
+        Write-Warning "未找到兜底原版图标 '$icoName'；没有 .bak 的配置文件图标无法还原喵。"
     }
     Clear-IconCache -RestartExplorer
 } else {
-    Write-Warning "找不到模块，无法自动还原。请手动将各 msedge.exe.mahiro.bak 改回 msedge.exe。"
+    Write-Warning "找不到模块，无法自动还原喵。请手动将各 msedge.exe.mahiro.bak 改回 msedge.exe。"
 }
 
 # --- 4) 清理常驻目录 ---
@@ -81,7 +81,7 @@ Write-Host "[4/4] 清理 $base ..."
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:NothingRestored) {
-    Write-Host "卸载完成（图标本就是原版，已确保清理干净）。" -ForegroundColor Green
+    Write-Host "卸载完成（图标本就是原版，已确保清理干净喵）～" -ForegroundColor Green
 } else {
-    Write-Host "卸载完成，Edge 图标已恢复原版。" -ForegroundColor Green
+    Write-Host "卸载完成，Edge 图标已恢复原版喵～" -ForegroundColor Green
 }
