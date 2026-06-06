@@ -26,6 +26,7 @@ if sys.platform.startswith("win"):
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
+import webbrowser
 
 
 # ============================================================
@@ -265,7 +266,7 @@ class MahiroEdgeApp(ctk.CTk):
         sp.update_idletasks()
         
         self._splash = sp
-        self.after(3000, self._end_splash)
+        self.after(2500, self._end_splash)
 
     def _end_splash(self):
         if self._splash is not None:
@@ -293,6 +294,15 @@ class MahiroEdgeApp(ctk.CTk):
         # overrideredirect 会让窗口从任务栏消失：找回任务栏按钮，再叠加系统级模糊。
         self._enable_taskbar()
         self._apply_window_effect()
+
+        # 启动画面结束后，在后台静默预加载信息弹窗，并立刻将其隐藏
+        self.after(500, self._preload_info)
+    
+    # 配合增加一个小方法
+    def _preload_info(self):
+        self._show_info_dialog()
+        if hasattr(self, "_info_win") and self._info_win is not None:
+            self._info_win.withdraw() # 画完立刻藏起来
 
     # ============================================================
     # 自定义标题栏配套：任务栏按钮、系统级模糊、最小化、窗口拖动
@@ -442,6 +452,13 @@ class MahiroEdgeApp(ctk.CTk):
             hover_color=MIN_HOVER, text_color=TITLEBAR_FG,
             command=self._minimize,
         ).pack(side="right")
+        # 信息按钮
+        ctk.CTkButton(
+            bar, text="ⓘ", width=44, height=38, corner_radius=0,
+            font=ctk.CTkFont(size=16), fg_color=TITLEBAR_BG,
+            hover_color=MIN_HOVER, text_color=TITLEBAR_FG,
+            command=self._show_info_dialog,
+        ).pack(side="right")
 
         # 拖动：标题栏底条与标题文字都可拖
         for w in (bar, title):
@@ -453,6 +470,93 @@ class MahiroEdgeApp(ctk.CTk):
             self.destroy()
         except Exception:
             os._exit(0)
+    
+    # --- 信息弹窗 ---
+    def _show_info_dialog(self):
+        # 1. 如果窗口已经存在，直接解除隐藏并聚焦
+        if hasattr(self, "_info_win") and self._info_win is not None and self._info_win.winfo_exists():
+            self._info_win.deiconify() # 解除隐藏
+            self._info_win.lift()      # 提升到顶层
+            self._info_win.focus()     # 获取焦点
+            
+            # 重新计算一下居中（防止主窗口被拖动过）
+            w, h = 300, 180
+            x = self.winfo_x() + (self.winfo_width() - w) // 2
+            y = self.winfo_y() + (self.winfo_height() - h) // 2
+            self._info_win.geometry(f"+{x}+{y}")
+            return
+
+        # 2. 如果是首次调用，则创建窗口（后续代码几乎不变）
+        info_win = ctk.CTkToplevel(self)
+        self._info_win = info_win
+        
+        # 隐藏系统原生标题栏，复用主窗口的无边框和描边方案
+        info_win.overrideredirect(True)
+        info_win.configure(fg_color=EYE_MID) # 底色作为边框色
+        info_win.attributes("-topmost", True) # 确保在最上层
+
+        # 居中计算：悬浮在主窗口正中央
+        info_win.update_idletasks()
+        w, h = 300, 180
+        x = self.winfo_x() + (self.winfo_width() - w) // 2
+        y = self.winfo_y() + (self.winfo_height() - h) // 2
+        info_win.geometry(f"{w}x{h}+{x}+{y}")
+        info_win.transient(self)
+        
+        # 外层容器：留出 1px 细边
+        outer = ctk.CTkFrame(info_win, fg_color=PINK_BG, corner_radius=0)
+        outer.pack(fill="both", expand=True, padx=1, pady=1)
+
+        # 迷你的自定义标题栏
+        bar = ctk.CTkFrame(outer, height=32, corner_radius=0, fg_color=TITLEBAR_BG)
+        bar.pack(fill="x", side="top")
+        bar.pack_propagate(False)
+        
+        ctk.CTkLabel(
+            bar, text="  关于", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+            text_color=TITLEBAR_FG,
+        ).pack(side="left")
+        
+        # 弹窗关闭按钮
+        ctk.CTkButton(
+            bar, text="✕", width=38, height=32, corner_radius=0,
+            font=ctk.CTkFont(size=14), fg_color=TITLEBAR_BG,
+            hover_color=CLOSE_HOVER, text_color=TITLEBAR_FG,
+            command=info_win.withdraw, 
+        ).pack(side="right")
+
+        # 内容容器（使用粉色卡片底色）
+        body = ctk.CTkFrame(outer, fg_color=PINK_CARD, corner_radius=12)
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 16))
+
+        # 版本号
+        ctk.CTkLabel(
+            body, text="v1.0.1", 
+            font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"), 
+            text_color=PINK_TEXT
+        ).pack(pady=(12, 2))
+        
+        # 作者信息
+        ctk.CTkLabel(
+            body, text="作者：HaroldRoot", 
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12), 
+            text_color=PINK_SUBTLE
+        ).pack(pady=(0, 10))
+
+        # 项目仓库链接（加下划线，模拟超链接效果）
+        link_lbl = ctk.CTkLabel(
+            body, text="🔗 访问 GitHub 项目仓库", 
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, underline=True), 
+            text_color=EYE_DEEP, cursor="hand2"
+        )
+        link_lbl.pack()
+        
+        # 绑定左键点击事件打开浏览器
+        link_lbl.bind(
+            "<Button-1>", 
+            lambda e: webbrowser.open("https://github.com/HaroldRoot/mahiro-edge")
+        )
 
     # --- 图标变体选择卡片（带预览缩略图）---
     def _build_variant_cards(self, parent):
@@ -496,6 +600,7 @@ class MahiroEdgeApp(ctk.CTk):
 
             # 整张卡片（含子控件）可点选
             for w in (card, img_lbl, name_lbl, sub_lbl):
+                w.configure(cursor="hand2")
                 w.bind("<Button-1>", lambda e, n=name: self._select_variant(n))
             self._variant_cards[name] = card
 
