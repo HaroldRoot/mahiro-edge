@@ -82,6 +82,7 @@ $module  = Join-Path $base 'MahiroEdge.psm1'
 $icoPath = Join-Path $base 'oyama-mahiro-ahoge.ico'
 $applyPs = Join-Path $base 'Apply.ps1'
 $enforcerVbs = Join-Path $base 'run-hidden.vbs'
+$runtimeTaskFailed = $false
 Import-Module $module -Force
 
 # --- 2) 关闭所有 Edge 进程（解除 exe 文件占用，否则无法写资源）---
@@ -151,6 +152,7 @@ try {
         -Description '常驻：把运行中的 Edge 窗口图标实时替换为绪山真寻粉色呆毛' | Out-Null
     Start-ScheduledTask -TaskName $runtimeTaskName -ErrorAction SilentlyContinue  # 本次会话立即生效，无需重新登录
 } catch {
+    $runtimeTaskFailed = $true
     Write-Warning "运行时图标任务注册失败（不影响静态图标）：$($_.Exception.Message)"
 }
 
@@ -159,3 +161,20 @@ Write-Host "[6/6] 刷新图标缓存喵 ..."
 Clear-IconCache -RestartExplorer
 
 Write-Host "安装完成喵！桌面/任务栏的 Edge 图标现在应是粉色呆毛～" -ForegroundColor Green
+
+# GUI 以此机器可读结果区分完全成功、部分成功和失败；普通终端仍可照常阅读上方日志。
+$partial = ($r.Total -eq 0) -or (($r.Failed + $r.ProfileFailed) -gt 0) -or $runtimeTaskFailed
+$summary = [ordered]@{
+    Operation = 'install'
+    Success = -not $partial
+    Partial = $partial
+    ExePatched = $r.Patched
+    ExeFailed = $r.Failed
+    ProfilePatched = $r.ProfilePatched
+    ProfileFailed = $r.ProfileFailed
+    RuntimeTaskReady = -not $runtimeTaskFailed
+    Message = if ($partial) { '安装只部分完成；请查看详细日志。' } else { '安装完成。' }
+}
+Write-Output ('@@MAHIRO_RESULT@@' + ($summary | ConvertTo-Json -Compress))
+if ($partial) { exit 2 }
+exit 0

@@ -55,6 +55,7 @@ def main():
         data(os.path.join("src", "Uninstall.ps1"), "src"),
         data(os.path.join("src", "Apply.ps1"), "src"),
         data(os.path.join("src", "IconEnforcer.ps1"), "src"),
+        data(os.path.join("src", "Status.ps1"), "src"),
         data(os.path.join("src", "run-hidden.vbs"), "src"),
         data(os.path.join("src", "MahiroEdge.psm1"), "src"),
     ]

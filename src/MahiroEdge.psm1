@@ -1,5 +1,7 @@
 ﻿# MahiroEdge.psm1 — 核心模块：发现 Edge、解析 .ico、改写 PE 图标资源、还原、刷新缓存
-# 所有公开函数：Find-EdgeExecutables / Invoke-Patch / Invoke-Restore / Clear-IconCache / Test-IsPatched
+# 公开函数：Find-EdgeExecutables / Get-IconImagesFromIco / Set-ExeIcon / Invoke-Patch /
+#           Invoke-Restore / Clear-IconCache / Test-IsPatched / Find-EdgeProfileIcons /
+#           Set-ProfileIcon / Test-ProfileIconApplied / Get-SystemUptimeMinutes
 
 $ErrorActionPreference = 'Stop'
 
@@ -226,8 +228,29 @@ function Find-EdgeExecutables {
 }
 
 # ============================================================
+# 判断备份是否属于当前这一个 Edge 二进制版本。
+# Edge 更新会原地替换 Application\msedge.exe；若把旧版本的 .bak 覆盖回来，
+# Windows Side-by-Side 依赖会不匹配，导致 Edge 无法启动。因此版本不一致时只能跳过。
+function Test-BackupMatchesExeVersion {
+    param(
+        [Parameter(Mandatory)][string]$ExePath,
+        [Parameter(Mandatory)][string]$BackupPath
+    )
+
+    try {
+        $exeVersion = (Get-Item -LiteralPath $ExePath -Force).VersionInfo.FileVersion
+        $backupVersion = (Get-Item -LiteralPath $BackupPath -Force).VersionInfo.FileVersion
+        return (-not [string]::IsNullOrWhiteSpace($exeVersion)) -and
+               (-not [string]::IsNullOrWhiteSpace($backupVersion)) -and
+               ($exeVersion -eq $backupVersion)
+    } catch {
+        # 无法可靠确认时宁可不覆盖当前可运行的浏览器。
+        return $false
+    }
+}
+
 # 给单个 exe 打补丁：写入 .ico 各帧为 RT_ICON，重写所有 RT_GROUP_ICON 指向它们，
-# 并写入标记资源。写前自动备份为 <exe>.mahiro.bak（已存在则保留原备份）。
+# 并写入标记资源。写前自动备份为 <exe>.mahiro.bak。
 # ============================================================
 function Set-ExeIcon {
     param(
@@ -243,7 +266,12 @@ function Set-ExeIcon {
     }
 
     # 备份（仅首次；保护原始未补丁文件）。仅在确有图标可改时才备份。
+    # Edge 更新后，旧版备份不能再用于还原当前 exe；此处以当前版本重新建备份。
     $bak = "$ExePath.mahiro.bak"
+    if ((Test-Path -LiteralPath $bak) -and -not (Test-BackupMatchesExeVersion -ExePath $ExePath -BackupPath $bak)) {
+        Write-Warning "[更新备份] 检测到 Edge 旧版本备份，已为当前版本重新备份: $ExePath"
+        Remove-Item -LiteralPath $bak -Force
+    }
     if (-not (Test-Path $bak)) {
         Copy-Item -LiteralPath $ExePath -Destination $bak -Force
     }
@@ -363,6 +391,21 @@ function Test-ProfileIconApplied {
 }
 
 # ============================================================
+# 系统已开机多少分钟。用于判断"现在重启 explorer 会不会吃掉开机启动项"。
+# 注意：用 Win32_OperatingSystem.LastBootUpTime 而不是 uptime 计数器，
+# 因为它把快速启动（休眠恢复）也算进"这次会话"，而 Run 项正是在这个会话里跑的。
+# ============================================================
+function Get-SystemUptimeMinutes {
+    try {
+        $boot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+        return [double]((Get-Date) - $boot).TotalMinutes
+    } catch {
+        # 无法确认开机时间时按刚开机处理，避免在启动项仍可能运行时重启 explorer。
+        return [double]0
+    }
+}
+
+# ============================================================
 # 批量补丁：发现所有 exe，逐个应用（单个失败不影响其它），返回统计。
 # $Force=$false 时跳过已打补丁的 exe（幂等，供计划任务高频调用）。
 # ============================================================
@@ -435,12 +478,18 @@ function Invoke-Restore {
     }
 
     $exes = Find-EdgeExecutables
-    $restored = 0; $missing = 0; $failed = 0; $orphanCleaned = 0
+    $restored = 0; $missing = 0; $failed = 0; $orphanCleaned = 0; $staleBackup = 0
     $handledBaks = New-Object System.Collections.Generic.HashSet[string]
     foreach ($exe in $exes) {
         $bak = "$exe.mahiro.bak"
         try {
             if (Test-Path $bak) {
+                if (-not (Test-BackupMatchesExeVersion -ExePath $exe -BackupPath $bak)) {
+                    Write-Warning "[跳过过期备份] 当前 Edge 与备份版本不一致，未覆盖: $exe"
+                    $staleBackup++
+                    [void]$handledBaks.Add($bak.ToLowerInvariant())
+                    continue
+                }
                 Copy-Item -LiteralPath $bak -Destination $exe -Force
                 Remove-Item -LiteralPath $bak -Force
                 [void]$handledBaks.Add($bak.ToLowerInvariant())
@@ -468,10 +517,15 @@ function Invoke-Restore {
                 $exe = $bak -replace '\.mahiro\.bak$', ''
                 try {
                     if (Test-Path -LiteralPath $exe) {
-                        Copy-Item -LiteralPath $bak -Destination $exe -Force
-                        Remove-Item -LiteralPath $bak -Force
-                        Write-Host "[还原] $exe"
-                        $restored++
+                        if (-not (Test-BackupMatchesExeVersion -ExePath $exe -BackupPath $bak)) {
+                            Write-Warning "[跳过过期备份] 当前 Edge 与备份版本不一致，未覆盖: $exe"
+                            $staleBackup++
+                        } else {
+                            Copy-Item -LiteralPath $bak -Destination $exe -Force
+                            Remove-Item -LiteralPath $bak -Force
+                            Write-Host "[还原] $exe"
+                            $restored++
+                        }
                     } else {
                         Remove-Item -LiteralPath $bak -Force
                         Write-Host "[清理孤儿备份] $bak"
@@ -512,25 +566,90 @@ function Invoke-Restore {
     }
 
     return [pscustomobject]@{
-        Restored = $restored; NoBackup = $missing; Failed = $failed; OrphanCleaned = $orphanCleaned
+        Restored = $restored; NoBackup = $missing; StaleBackup = $staleBackup; Failed = $failed; OrphanCleaned = $orphanCleaned
         ProfileRestored = $profRestored; ProfileFallback = $profFallback
         ProfileNoBackup = $profMissing; ProfileFailed = $profFailed
     }
 }
 
 # ============================================================
-# 清理 Windows 图标缓存并重启 explorer，使新图标立即可见。
+# 清理 Windows 图标缓存；需要时重启 explorer 让新图标立即可见。
+#
+# ⚠ 这里曾经无条件 Stop-Process explorer，造成过真实故障：
+#   计划任务在"登录时"触发时，开机后十几秒就把外壳杀掉，而那一刻 explorer
+#   才刚开始逐个执行 HKLM\...\Run 里的启动项——被杀掉后新起的 explorer 不会
+#   重跑那批 Run 项，排在后半段的启动项（火绒托盘、Everything 托盘等）就永久
+#   丢了，表现为"有些自启动项经常不开机启动"。而且新的 explorer 不会检查
+#   残留图标缓存，杀掉它对刷新图标也不是必需的。
+#
+# 因此现在的规则：
+#   - SYSTEM/session 0：不清理缓存、不操作任何用户的 explorer；缓存刷新由交互式
+#     安装/卸载会话处理。计划任务以 SYSTEM 运行，因此每日 guard 不会刷新用户缓存。
+#   - 开机未满 $MinUptimeMinutes 分钟：不操作缓存，也不重启外壳；缓存被 explorer
+#     独占，无法可靠删除；之后需由交互式安装/会话刷新。
+#   - 已过启动窗口：先停止 explorer，删除缓存，再恢复 explorer。
+#
+# $MinUptimeMinutes 取 10 分钟：Run 项的启动窗口实测量级是开机后十几秒到
+# 一两分钟，10 分钟留了很宽的余量，也不会让用户为刷新图标等太久。
 # ============================================================
 function Clear-IconCache {
-    param([switch]$RestartExplorer)
-    try { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue } catch {}
-    Start-Sleep -Milliseconds 400
+    param(
+        [switch]$RestartExplorer,
+        [int]$MinUptimeMinutes = 10
+    )
+
+    $uptime = Get-SystemUptimeMinutes
+
+    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $isSystem = ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18')
+    if ($isSystem -or $currentSessionId -eq 0) {
+        Write-Host "[缓存] 当前运行于 SYSTEM/session 0；跳过缓存清理和 explorer 重启，避免操作 SYSTEM 配置或其他用户的桌面。" -ForegroundColor DarkGray
+        return
+    }
+
     $local = $env:LOCALAPPDATA
-    Remove-Item -Path "$local\IconCache.db" -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path "$local\Microsoft\Windows\Explorer\iconcache_*.db" -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path "$local\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
-    if ($RestartExplorer) {
-        if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+    if ($RestartExplorer -and $uptime -lt $MinUptimeMinutes) {
+        Write-Host ("[缓存] 开机仅 {0:N1} 分钟，处于启动窗口内：本次不删除缓存、不重启 explorer，" -f $uptime) -ForegroundColor DarkGray
+        Write-Host ("       以免丢掉尚未执行的 Run 启动项；需在交互式安装/会话中刷新缓存。") -ForegroundColor DarkGray
+        return
+    }
+
+    if (-not $RestartExplorer) {
+        Remove-Item -Path "$local\IconCache.db" -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "$local\Microsoft\Windows\Explorer\iconcache_*.db" -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "$local\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
+        return
+    }
+
+    $interactive = [Environment]::UserInteractive
+    if (-not $interactive) {
+        Write-Host "[缓存] 当前进程没有交互式桌面；跳过缓存清理和 explorer 重启。" -ForegroundColor DarkGray
+        return
+    }
+
+    $sessionExplorers = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId })
+    $wasRunning = ($sessionExplorers.Count -gt 0)
+    if ($wasRunning) {
+        foreach ($explorer in $sessionExplorers) {
+            try { Stop-Process -Id $explorer.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        # Wait for the process to release cache files instead of relying on a fixed delay.
+        $deadline = (Get-Date).AddSeconds(10)
+        while ((Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) {
+            Write-Warning "无法停止 explorer；为避免删除仍被占用的缓存，本次跳过缓存清理。"
+            return
+        }
+    }
+
+    try {
+        Remove-Item -Path "$local\IconCache.db" -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "$local\Microsoft\Windows\Explorer\iconcache_*.db" -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "$local\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
+    } finally {
+        if ($wasRunning -and -not (Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId })) {
             Start-Process explorer
         }
     }
@@ -538,4 +657,5 @@ function Clear-IconCache {
 
 Export-ModuleMember -Function Find-EdgeExecutables, Get-IconImagesFromIco, Set-ExeIcon, `
     Invoke-Patch, Invoke-Restore, Clear-IconCache, Test-IsPatched, `
-    Find-EdgeProfileIcons, Set-ProfileIcon, Test-ProfileIconApplied
+    Find-EdgeProfileIcons, Set-ProfileIcon, Test-ProfileIconApplied, `
+    Get-SystemUptimeMinutes

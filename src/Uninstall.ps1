@@ -8,6 +8,8 @@ $module   = Join-Path $base 'MahiroEdge.psm1'
 $taskName = 'MahiroEdgeIconGuard'
 $runtimeTaskName = 'MahiroEdgeIconRuntime'
 $icoName  = 'Edge Profile.ico'   # 项目自带的原版配置文件图标（无 .bak 时兜底还原用）
+$restoreResult = $null
+$moduleMissing = $false
 
 function Assert-Admin {
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -60,19 +62,25 @@ foreach ($cand in @((Join-Path $base $icoName), (Join-Path (Split-Path -Parent $
 if (Test-Path $module) {
     Import-Module $module -Force
     $r = Invoke-Restore -FallbackProfileIco $fallbackIco
-    Write-Host ("exe: 还原={0} 无备份={1} 失败={2} 清理孤儿备份={3}" -f $r.Restored, $r.NoBackup, $r.Failed, $r.OrphanCleaned) -ForegroundColor Cyan
+    $restoreResult = $r
+    Write-Host ("exe: 还原={0} 无备份={1} 跳过过期备份={2} 失败={3} 清理孤儿备份={4}" -f `
+        $r.Restored, $r.NoBackup, $r.StaleBackup, $r.Failed, $r.OrphanCleaned) -ForegroundColor Cyan
     Write-Host ("配置图标: 还原={0} 兜底还原={1} 无备份={2} 失败={3}" -f `
         $r.ProfileRestored, $r.ProfileFallback, $r.ProfileNoBackup, $r.ProfileFailed) -ForegroundColor Cyan
     # 边界情形：什么都没还原（exe 没补丁、配置图标也没换）——多半本来就是原版。如实告知，不假装“已恢复”。
-    if ($r.Restored -eq 0 -and $r.ProfileRestored -eq 0 -and $r.ProfileFallback -eq 0) {
+    if ($r.Restored -eq 0 -and $r.ProfileRestored -eq 0 -and $r.ProfileFallback -eq 0 -and $r.StaleBackup -eq 0) {
         Write-Host "未发现任何呆毛补丁痕迹：Edge 图标当前已是原版，无需还原喵～" -ForegroundColor Yellow
         $script:NothingRestored = $true
+    }
+    if ($r.StaleBackup -gt 0) {
+        Write-Warning "检测到 Edge 更新遗留的旧版 exe 备份，已跳过以保护当前 Edge；请重新安装图标保护后再卸载。"
     }
     if (-not $fallbackIco) {
         Write-Warning "未找到兜底原版图标 '$icoName'；没有 .bak 的配置文件图标无法还原喵。"
     }
     Clear-IconCache -RestartExplorer
 } else {
+    $moduleMissing = $true
     Write-Warning "找不到模块，无法自动还原喵。请手动将各 msedge.exe.mahiro.bak 改回 msedge.exe。"
 }
 
@@ -85,3 +93,19 @@ if ($script:NothingRestored) {
 } else {
     Write-Host "卸载完成，Edge 图标已恢复原版喵～" -ForegroundColor Green
 }
+
+$partial = $moduleMissing -or ($restoreResult -and (($restoreResult.Failed + $restoreResult.ProfileFailed + $restoreResult.StaleBackup) -gt 0))
+$summary = [ordered]@{
+    Operation = 'uninstall'
+    Success = -not $partial
+    Partial = $partial
+    ExeRestored = if ($restoreResult) { $restoreResult.Restored } else { 0 }
+    ExeStaleBackup = if ($restoreResult) { $restoreResult.StaleBackup } else { 0 }
+    ExeFailed = if ($restoreResult) { $restoreResult.Failed } else { 0 }
+    ProfileRestored = if ($restoreResult) { $restoreResult.ProfileRestored + $restoreResult.ProfileFallback } else { 0 }
+    ProfileFailed = if ($restoreResult) { $restoreResult.ProfileFailed } else { 0 }
+    Message = if ($partial) { '卸载只部分完成；请查看详细日志。' } else { '卸载完成。' }
+}
+Write-Output ('@@MAHIRO_RESULT@@' + ($summary | ConvertTo-Json -Compress))
+if ($partial) { exit 2 }
+exit 0

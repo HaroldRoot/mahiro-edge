@@ -3,19 +3,21 @@
 
 这是现有 PowerShell 脚本的图形前端：它不重写任何核心逻辑，而是直接调用
 src/Install.ps1 与 src/Uninstall.ps1（保持命令行功能完全不变），并解析脚本
-打印的 [N/M] 步骤标记来驱动粉色进度条。
+打印的 [N/M] 步骤标记来驱动粉色进度条。UI 采用已确认的「换装工作台」方向：
+深蓝预览台、纵向变体选择和单一主操作，日志按需展开。
 
 需要管理员权限：启动时检测，未提权则通过 UAC 自我提升后重启。
 打包：PyInstaller onefile，资源（start-screen.png、src/*.ps1、*.ico）随包内置。
 """
 import os
 import sys
-import re
 import ctypes
 import threading
 import subprocess
 import queue
-import tkinter.font as tkfont
+import json
+import time
+from tkinter import messagebox
 
 # 必须在导入 ctk 和创建示例之前调用！
 # if sys.platform.startswith("win"):
@@ -44,6 +46,7 @@ BASE = resource_base()
 SPLASH_PNG = os.path.join(BASE, "start-screen.png")
 INSTALL_PS1 = os.path.join(BASE, "src", "Install.ps1")
 UNINSTALL_PS1 = os.path.join(BASE, "src", "Uninstall.ps1")
+STATUS_PS1 = os.path.join(BASE, "src", "Status.ps1")
 
 # 两个呆毛图标变体。default 角度与原版 Edge 一致；rotated 角度更符合呆毛特征。
 # GUI 让用户预览并选择，安装时把对应变体名作为 -Variant 传给 Install.ps1。
@@ -76,27 +79,27 @@ def elevate_and_exit():
 
 
 # ============================================================
-# 主题色板 —— 取自绪山真寻官方人设配色
-#   头发浅粉 #ead4ce / 头发深粉 #ffaaa7 / 高光亮黄 #fbf4c8
-#   眼睛深色 #975f5c / 眼睛中色 #c4776c / 眼睛浅光 #f4b386
+# 主题色板 —— 取自动画人设图的奶油白、浅粉发色、琥珀色与制服海军蓝。
 # ============================================================
-HAIR_LIGHT = "#ead4ce"
-HAIR_DEEP = "#ffaaa7"
-HILIGHT_YELLOW = "#fbf4c8"
-EYE_DEEP = "#975f5c"
-EYE_MID = "#c4776c"
-EYE_GLOW = "#f4b386"
+HAIR_LIGHT = "#f3d7d0"
+HAIR_DEEP = "#f3a8a2"
+HILIGHT_YELLOW = "#f5c36d"
+EYE_DEEP = "#9d5a57"
+EYE_MID = "#d97f7b"
+EYE_GLOW = "#c9dae9"
 
-PINK_BG = HAIR_LIGHT
-PINK_CARD = "#f6e0db"
+PINK_BG = "#fff9f5"
+PINK_CARD = "#fffefc"
 PINK_PRIMARY = HAIR_DEEP
-PINK_PRIMARY_HOVER = "#ff8f8b"
-PINK_DANGER = "#f3c6c2"
-PINK_DANGER_HOVER = "#eab3ae"
-PINK_TEXT = "#8a4038"
-PINK_SUBTLE = EYE_DEEP
-LOG_BG = HILIGHT_YELLOW
-LOG_BORDER = EYE_MID
+PINK_PRIMARY_HOVER = "#d97f7b"
+PINK_DANGER = "#f4ddd8"
+PINK_DANGER_HOVER = "#edc8c0"
+PINK_TEXT = EYE_DEEP
+PINK_SUBTLE = "#435574"
+PREVIEW_BG = "#435574"
+PREVIEW_TITLE = "#fffefc"
+PREVIEW_SUBTLE = "#c9dae9"
+SUCCESS_GREEN = "#5e8d78"
 
 # 自定义标题栏配色（隐藏原生白色栏，自绘主题色横条）
 TITLEBAR_BG = HAIR_DEEP
@@ -104,30 +107,17 @@ TITLEBAR_FG = PINK_TEXT
 CLOSE_HOVER = "#e06a66"
 MIN_HOVER = PINK_PRIMARY_HOVER
 
+WINDOW_W = 760
+WINDOW_H = 620
+WORKBENCH_CARD_HEIGHT = 390
+
 FONT_FAMILY = "Microsoft YaHei UI"
-
-# 等宽字体。按优先级探测系统已装的第一个。
-# tkfont.families() 需要 Tk 根存在，故延迟到根创建后调用。
-MONO_CANDIDATES = ("Cascadia Code", "JetBrains Mono", "Consolas", "Courier New")
-
-
-def pick_mono_family():
-    """返回系统已安装的首个等宽字体名；都没有则回退 Consolas。"""
-    try:
-        installed = set(tkfont.families())
-    except Exception:
-        return "Consolas"
-    for name in MONO_CANDIDATES:
-        if name in installed:
-            return name
-    return "Consolas"
-
 
 # ============================================================
 # 在后台线程运行 PowerShell 脚本，逐行把输出推入队列；
-# 解析行首的 [N/M] 步骤标记估算进度。主线程轮询队列刷新 UI。
+# 只读取末尾的机器可读结果；界面不再展示技术日志或进度条。
 # ============================================================
-STEP_RE = re.compile(r"\[(\d+)\s*/\s*(\d+)\]")
+RESULT_PREFIX = "@@MAHIRO_RESULT@@"
 
 
 def run_powershell(ps1_path, out_queue, extra_args=None):
@@ -161,8 +151,7 @@ def run_powershell(ps1_path, out_queue, extra_args=None):
         # 让 PowerShell 以 UTF-8 输出，避免中文乱码；隐藏子进程控制台窗口。
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo = _hidden_startupinfo()
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -182,9 +171,71 @@ def run_powershell(ps1_path, out_queue, extra_args=None):
         return
 
     for line in proc.stdout:
-        out_queue.put(("line", line.rstrip("\r\n")))
+        line = line.rstrip("\r\n")
+        out_queue.put(("log", line))
+        if line.startswith(RESULT_PREFIX):
+            try:
+                out_queue.put(("result", json.loads(line[len(RESULT_PREFIX):])))
+            except json.JSONDecodeError:
+                out_queue.put(("error", "脚本没有返回有效的执行结果"))
     proc.wait()
     out_queue.put(("done", proc.returncode))
+
+
+def read_status(ps1_path, out_queue, request_id, retry_install=False):
+    """在后台读取只读状态；失败也只影响状态提示，不阻塞安装或恢复。"""
+    if not os.path.isfile(ps1_path):
+        out_queue.put(("status_error", (request_id, "找不到状态脚本")))
+        return
+    safe_path = ps1_path.replace("'", "''")
+    cmd = [
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+        "$OutputEncoding=[System.Text.Encoding]::UTF8; "
+        f"& '{safe_path}' -AsJson",
+    ]
+    deadline = time.monotonic() + (5.0 if retry_install else 0.0)
+    while True:
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                startupinfo=_hidden_startupinfo(), creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False,
+            )
+            payload = proc.stdout.strip()
+            status = json.loads(payload) if proc.returncode == 0 and payload else None
+        except Exception:
+            status = None
+
+        if status is not None and (
+            not retry_install or _installed_status_is_healthy(status)
+            or time.monotonic() >= deadline
+        ):
+            out_queue.put(("status", (request_id, status)))
+            return
+        if time.monotonic() >= deadline:
+            out_queue.put(("status_error", (request_id, "暂时无法读取保护状态")))
+            return
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+
+def _installed_status_is_healthy(payload):
+    guard_ok = payload.get("GuardTask", {}).get("Healthy", False)
+    runtime_ok = payload.get("RuntimeTask", {}).get("Healthy", False)
+    marked = payload.get("ExeMarked", 0)
+    total = payload.get("ExeTotal", 0)
+    return bool(
+        payload.get("Ok") and payload.get("InstallStaged") and total > 0
+        and marked == total and payload.get("AllProfileIconsPatched")
+        and guard_ok and runtime_ok
+    )
+
+
+def _hidden_startupinfo():
+    """创建隐藏子进程窗口的配置，供查询与实际操作共用。"""
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return startupinfo
 
 
 # ============================================================
@@ -196,8 +247,8 @@ class MahiroEdgeApp(ctk.CTk):
         ctk.set_appearance_mode("light")
 
         self.title("绪山真寻.exe")
-        self.geometry("520x560")
-        self.minsize(520, 560)
+        self.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        self.minsize(WINDOW_W, WINDOW_H)
         self.configure(fg_color=PINK_BG)
         try:
             self.iconbitmap(ICO_DEFAULT)
@@ -209,14 +260,21 @@ class MahiroEdgeApp(ctk.CTk):
         # 无边框窗口缺少系统投影/边界。把 root 底色设成描边色，内容 inset 1px 露出细边。
         self.configure(fg_color=EYE_MID)
 
-        self._mono_family = pick_mono_family()
         self._variant = "default"        # 当前选中的图标变体
         self._variant_cards = {}         # name -> CTkFrame（用于切换高亮边框）
 
         self.queue = queue.Queue()
+        self.status_queue = queue.Queue()
         self.running = False
+        self._last_result = None
+        self._operation_error = None
+        self._operation_log = []
+        self._status_request_id = 0
+        self._verb = None
         self._build_ui()
         self.after(80, self._poll_queue)
+        self.after(120, self._poll_status)
+        self.after(0, self._refresh_status)
 
         self.withdraw()
         self._splash = None
@@ -280,16 +338,18 @@ class MahiroEdgeApp(ctk.CTk):
         self.update_idletasks()
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        win_w, win_h = 520, 560
+        win_w, win_h = WINDOW_W, WINDOW_H
         x = (sw // 2) - (win_w // 2)
         y = (sh // 2) - (win_h // 2)
 
         self.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        self.minsize(520, 560)
+        self.minsize(WINDOW_W, WINDOW_H)
 
         self.deiconify()
         self.lift()
         self.focus_force()
+        # CTk 在高 DPI 下会让两列的请求高度略有差异；显示后按右侧实际高度校准左侧。
+        self.after(80, self._align_workbench_cards)
 
         # overrideredirect 会让窗口从任务栏消失：找回任务栏按钮，再叠加系统级模糊。
         self._enable_taskbar()
@@ -303,6 +363,17 @@ class MahiroEdgeApp(ctk.CTk):
         self._show_info_dialog()
         if hasattr(self, "_info_win") and self._info_win is not None:
             self._info_win.withdraw() # 画完立刻藏起来
+
+    def _align_workbench_cards(self):
+        """让效果预览和选择卡片的可见底边严格对齐。"""
+        preview = getattr(self, "_preview_card", None)
+        choice = getattr(self, "_choice_card", None)
+        if preview is None or choice is None:
+            return
+        current, desired = preview.winfo_height(), choice.winfo_height()
+        if current > 1 and desired > 1 and current != desired:
+            requested = int(preview.cget("height") * desired / current)
+            preview.configure(height=requested)
 
     # ============================================================
     # 自定义标题栏配套：任务栏按钮、系统级模糊、最小化、窗口拖动
@@ -353,77 +424,100 @@ class MahiroEdgeApp(ctk.CTk):
         self.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        # 1px inset：root 底色为描边色 EYE_MID，外层容器留 1px 露出细边，
-        # 给无边框窗口一个清晰边界（替代被 overrideredirect 移除的系统边框）。
+        # 1px inset：root 底色为描边色 EYE_MID，外层容器留 1px 露出细边。
         outer = ctk.CTkFrame(self, fg_color=PINK_BG, corner_radius=0)
         outer.pack(fill="both", expand=True, padx=1, pady=1)
-
-        # --- 自定义标题栏：主题色横条 + 标题 + 最小化/关闭按钮 ---
         self._build_titlebar(outer)
 
-        # 内容容器（标题栏以下的一切都放这里，留出左右内边距）
         body = ctk.CTkFrame(outer, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=24, pady=(16, 0))
+        body.pack(fill="both", expand=True, padx=30, pady=(20, 20))
 
-        # 顶部标题区（左对齐，告别居中）
         ctk.CTkLabel(
-            body, text="Microsoft Edge 图标替换向导", anchor="w",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"), text_color=PINK_TEXT,
-        ).pack(fill="x", pady=(4, 2))
+            body, text="MAHIRO EDGE · 图标守护", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"), text_color=PINK_PRIMARY,
+        ).pack(fill="x")
         ctk.CTkLabel(
-            body, text="若有正在运行的 Edge 浏览器和文件资源管理器窗口，请先关闭，避免丢失数据喵", anchor="w",
+            body, text="给 Edge 换上粉色呆毛", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"), text_color=PREVIEW_BG,
+        ).pack(fill="x", pady=(3, 3))
+        ctk.CTkLabel(
+            body, text="先挑喜欢的角度，再一键启用长期保护。", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13), text_color=PINK_SUBTLE,
+        ).pack(fill="x", pady=(0, 14))
+
+        self.status_label = ctk.CTkLabel(
+            body, text="正在检查保护状态…", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+            text_color=SUCCESS_GREEN, fg_color="#eaf4ee", corner_radius=12,
+        )
+        self.status_label.pack(fill="x", pady=(0, 18), ipady=7)
+
+        workbench = ctk.CTkFrame(body, fg_color="transparent")
+        # 两张卡片按各自内容收束；不要让较短的选择区被预览区拉成空白大卡片。
+        workbench.pack(fill="x")
+        workbench.grid_columnconfigure(0, weight=5)
+        workbench.grid_columnconfigure(1, weight=6)
+
+        preview = ctk.CTkFrame(
+            workbench, height=WORKBENCH_CARD_HEIGHT, fg_color=PREVIEW_BG, corner_radius=28
+        )
+        self._preview_card = preview
+        preview.grid(row=0, column=0, sticky="new", padx=(0, 16))
+        preview.grid_propagate(False)
+        ctk.CTkLabel(
+            preview, text="效果预览", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=PREVIEW_SUBTLE,
+        ).pack(fill="x", padx=24, pady=(24, 0))
+        self._preview_images = {}
+        for name, path in (("default", ICO_DEFAULT), ("rotated", ICO_ROTATED)):
+            try:
+                self._preview_images[name] = ctk.CTkImage(
+                    light_image=Image.open(path), size=(132, 132)
+                )
+            except Exception:
+                self._preview_images[name] = None
+        self.preview_icon = ctk.CTkLabel(preview, text="", image=None)
+        self.preview_icon.pack(expand=True, pady=(12, 4))
+        ctk.CTkLabel(
+            preview, text="Microsoft Edge",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=19, weight="bold"), text_color=PREVIEW_TITLE,
+        ).pack(pady=(0, 4))
+        ctk.CTkLabel(
+            preview, text="桌面、任务栏与新窗口都会同步",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=PREVIEW_SUBTLE,
+        ).pack(pady=(0, 24))
+
+        choice = ctk.CTkFrame(
+            workbench, height=WORKBENCH_CARD_HEIGHT, fg_color=PINK_CARD, corner_radius=28
+        )
+        self._choice_card = choice
+        choice.grid(row=0, column=1, sticky="new")
+        choice.grid_propagate(False)
+        ctk.CTkLabel(
+            choice, text="选择呆毛角度", anchor="w",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=19, weight="bold"), text_color=PREVIEW_BG,
+        ).pack(fill="x", padx=24, pady=(24, 2))
+        ctk.CTkLabel(
+            choice, text="之后随时可以回来换一种。", anchor="w",
             font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=PINK_SUBTLE,
-        ).pack(fill="x", pady=(0, 12))
+        ).pack(fill="x", padx=24)
+        self._build_variant_cards(choice)
 
-        # --- 图标变体选择卡片 ---
-        self._build_variant_cards(body)
-
-        # --- 按钮区 ---
-        btn_row = ctk.CTkFrame(body, fg_color="transparent")
-        btn_row.pack(pady=(4, 12))
         self.btn_install = ctk.CTkButton(
-            btn_row, text="安装呆毛图标", width=210, height=46,
+            choice, text="启用呆毛保护", height=46,
             font=ctk.CTkFont(family=FONT_FAMILY, size=15, weight="bold"),
             fg_color=PINK_PRIMARY, hover_color=PINK_PRIMARY_HOVER,
-            text_color=PINK_TEXT, corner_radius=23,
-            command=self.on_install,
+            text_color=PINK_TEXT, corner_radius=23, command=self.on_install,
         )
-        self.btn_install.grid(row=0, column=0, padx=8)
+        self.btn_install.pack(fill="x", padx=24, pady=(12, 7))
         self.btn_uninstall = ctk.CTkButton(
-            btn_row, text="恢复原版图标", width=210, height=46,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=15, weight="bold"),
-            fg_color=PINK_DANGER, hover_color=PINK_DANGER_HOVER,
-            text_color=PINK_TEXT, corner_radius=23,
+            choice, text="恢复原版图标", height=34,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+            fg_color="transparent", hover_color=HAIR_LIGHT,
+            text_color=PINK_SUBTLE, corner_radius=17, border_width=0,
             command=self.on_uninstall,
         )
-        self.btn_uninstall.grid(row=0, column=1, padx=8)
-
-        # --- 粉色进度条 ---
-        self.progress = ctk.CTkProgressBar(
-            body, width=460, height=16, corner_radius=8,
-            fg_color=PINK_CARD, progress_color=PINK_PRIMARY,
-            border_width=1, border_color=EYE_GLOW,
-        )
-        self.progress.set(0)
-        self.progress.pack(pady=(6, 4))
-
-        # --- 日志输出框（基底等宽，便于路径/日志逐字符对齐）---
-        # 中文在等宽字体里会落到宋体（衬线，难看）。故做"双字体":
-        # 基底用等宽，再把每行的 CJK 片段打 tag 换成微软雅黑（无衬线），中英各取所长。
-        self.log = ctk.CTkTextbox(
-            body, width=480, height=140, corner_radius=12,
-            fg_color=LOG_BG, text_color=PINK_TEXT, border_width=1,
-            border_color=LOG_BORDER, font=ctk.CTkFont(family=self._mono_family, size=12),
-        )
-        self.log.pack(pady=(0, 16), fill="both", expand=True)
-        # CJK 片段用的无衬线字体 tag（直接配在底层 tk Textbox 上：CTkTextbox 禁止
-        # 在 tag 上设 font，但底层 widget 没这限制）。
-        self._cjk_font = tkfont.Font(family=FONT_FAMILY, size=12)
-        try:
-            self.log._textbox.tag_configure("cjk", font=self._cjk_font)
-        except Exception:
-            pass
-        self.log.configure(state="disabled")
+        self.btn_uninstall.pack(fill="x", padx=24, pady=(0, 2))
 
     # --- 自定义标题栏 ---
     def _build_titlebar(self, parent):
@@ -558,101 +652,54 @@ class MahiroEdgeApp(ctk.CTk):
             lambda e: webbrowser.open("https://github.com/HaroldRoot/mahiro-edge")
         )
 
-    # --- 图标变体选择卡片（带预览缩略图）---
+    # --- 图标变体选择：纵向单选项，和左侧大预览同步。---
     def _build_variant_cards(self, parent):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 12))
-        row.grid_columnconfigure(0, weight=1)
-        row.grid_columnconfigure(1, weight=1)
-
         specs = [
             ("default", ICO_DEFAULT, "原版角度", "与原版 Edge 一致喵"),
             ("rotated", ICO_ROTATED, "呆毛角度", "更符合呆毛特征喵"),
         ]
-        self._variant_thumbs = []  # 持有引用防被 GC
-        for col, (name, ico, label, sub) in enumerate(specs):
+        self._variant_cards = {}
+        for name, _ico, label, sub in specs:
             card = ctk.CTkFrame(
-                row, fg_color=PINK_CARD, corner_radius=14,
-                border_width=2, border_color=PINK_CARD,
+                parent, fg_color=PINK_BG, corner_radius=15,
+                border_width=2, border_color=HAIR_LIGHT,
             )
-            card.grid(row=0, column=col, padx=6, sticky="nsew")
-
-            thumb = None
-            try:
-                pil = Image.open(ico)
-                thumb = ctk.CTkImage(light_image=pil, size=(56, 56))
-                self._variant_thumbs.append(thumb)
-            except Exception:
-                pass
-
-            img_lbl = ctk.CTkLabel(card, image=thumb, text="")
-            img_lbl.pack(pady=(12, 4))
+            card.pack(fill="x", padx=24, pady=(12 if name == "default" else 5, 0))
             name_lbl = ctk.CTkLabel(
                 card, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
-                text_color=PINK_TEXT,
+                text_color=PREVIEW_BG, anchor="w",
             )
-            name_lbl.pack()
+            name_lbl.grid(row=0, column=0, padx=14, pady=(10, 0), sticky="w")
             sub_lbl = ctk.CTkLabel(
                 card, text=sub, font=ctk.CTkFont(family=FONT_FAMILY, size=11),
-                text_color=PINK_SUBTLE,
+                text_color=PINK_SUBTLE, anchor="w",
             )
-            sub_lbl.pack(pady=(0, 12))
+            sub_lbl.grid(row=1, column=0, padx=14, pady=(0, 10), sticky="w")
+            indicator = ctk.CTkLabel(
+                card, text="○", font=ctk.CTkFont(size=17, weight="bold"), text_color=PINK_PRIMARY,
+            )
+            indicator.grid(row=0, column=1, rowspan=2, padx=14)
+            card.grid_columnconfigure(0, weight=1)
 
             # 整张卡片（含子控件）可点选
-            for w in (card, img_lbl, name_lbl, sub_lbl):
+            for w in (card, name_lbl, sub_lbl, indicator):
                 w.configure(cursor="hand2")
                 w.bind("<Button-1>", lambda e, n=name: self._select_variant(n))
-            self._variant_cards[name] = card
+            self._variant_cards[name] = (card, indicator)
 
         self._select_variant("default")  # 初始高亮
 
     def _select_variant(self, name):
         self._variant = name
-        for n, card in self._variant_cards.items():
-            card.configure(border_color=(PINK_PRIMARY if n == name else PINK_CARD))
-
-    # --- 日志辅助 ---
-    def _append_log(self, text):
-        self.log.configure(state="normal")
-        start_index = self.log.index("end-1c")  # 本行插入前的位置，用于定位 CJK 片段
-        self.log.insert("end", text + "\n")
-        self._tag_cjk_runs(start_index, text)
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    # 把刚插入这一行里的 CJK 连续片段打上 "cjk" tag（换成无衬线字体）。
-    # 基底等宽字体只擅长 ASCII；中文落到等宽会变宋体衬线，故单独换雅黑。
-    def _tag_cjk_runs(self, start_index, text):
-        try:
-            line, col = (int(x) for x in start_index.split("."))
-        except Exception:
-            return
-        i = 0
-        n = len(text)
-        while i < n:
-            if self._is_cjk(text[i]):
-                j = i
-                while j < n and self._is_cjk(text[j]):
-                    j += 1
-                try:
-                    self.log._textbox.tag_add(
-                        "cjk", f"{line}.{col + i}", f"{line}.{col + j}"
-                    )
-                except Exception:
-                    pass
-                i = j
-            else:
-                i += 1
-
-    @staticmethod
-    def _is_cjk(ch):
-        o = ord(ch)
-        # CJK 统一表意 + 扩展A + 兼容 + 中日韩标点 + 全角符号
-        return (
-            0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
-            or 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF
-            or 0xF900 <= o <= 0xFAFF
-        )
+        for n, (card, indicator) in self._variant_cards.items():
+            selected = n == name
+            card.configure(
+                fg_color=(HAIR_LIGHT if selected else PINK_BG),
+                border_color=(PINK_PRIMARY if selected else HAIR_LIGHT),
+            )
+            indicator.configure(text=("●" if selected else "○"))
+        if hasattr(self, "preview_icon"):
+            self.preview_icon.configure(image=self._preview_images.get(name))
 
     def _set_busy(self, busy):
         self.running = busy
@@ -660,97 +707,175 @@ class MahiroEdgeApp(ctk.CTk):
         self.btn_install.configure(state=state)
         self.btn_uninstall.configure(state=state)
 
+    def _refresh_status(self):
+        if not self.running:
+            self._status_request_id += 1
+            request_id = self._status_request_id
+            threading.Thread(
+                target=read_status, args=(STATUS_PS1, self.status_queue, request_id), daemon=True
+            ).start()
+
+    def _poll_status(self):
+        try:
+            while True:
+                kind, payload = self.status_queue.get_nowait()
+                if kind == "status":
+                    request_id, payload = payload
+                    if self.running or request_id != self._status_request_id:
+                        continue
+                    if self._verb == "安装" and self._last_result and self._last_result.get("Success"):
+                        guard_ok = payload.get("GuardTask", {}).get("Healthy", False)
+                        runtime_ok = payload.get("RuntimeTask", {}).get("Healthy", False)
+                        marked = payload.get("ExeMarked", 0)
+                        total = payload.get("ExeTotal", 0)
+                        profiles_ok = payload.get("AllProfileIconsPatched", False)
+                        if payload.get("Ok") and payload.get("InstallStaged") and total > 0 and marked == total and profiles_ok and guard_ok and runtime_ok:
+                            self.status_label.configure(
+                                text=f"安装完成 · EXE {marked}/{total} · 两项任务正常", text_color=SUCCESS_GREEN
+                            )
+                        else:
+                            self.status_label.configure(
+                                text=f"安装未完全完成 · EXE {marked}/{total} · 请查看详细日志", text_color=PINK_TEXT
+                            )
+                            guard = payload.get("GuardTask", {})
+                            runtime = payload.get("RuntimeTask", {})
+                            diagnostics = [
+                                "安装后状态核对：",
+                                f"状态查询正常: {payload.get('Ok', False)}；暂存图标: {payload.get('InstallStaged', False)}",
+                                f"EXE 已标记: {marked}/{total}；配置图标已替换: {payload.get('ProfileIconPatched', 0)}/{payload.get('ProfileIconTotal', 0)}",
+                                f"自愈任务: Healthy={guard.get('Healthy', False)}, State={guard.get('State', 'unknown')}, LastTaskResult={guard.get('LastTaskResult', 'unknown')}",
+                                f"运行时任务: Healthy={runtime.get('Healthy', False)}, State={runtime.get('State', 'unknown')}, ProcessAlive={runtime.get('ProcessAlive', False)}",
+                            ]
+                            if payload.get("Error"):
+                                diagnostics.append(f"状态错误: {payload['Error']}")
+                            self._show_operation_details("\n".join(diagnostics))
+                        continue
+                    guard = payload.get("GuardTask", {}).get("Exists", False)
+                    runtime = payload.get("RuntimeTask", {}).get("Exists", False)
+                    marked = payload.get("ExeMarked", 0)
+                    total = payload.get("ExeTotal", 0)
+                    guard_healthy = payload.get("GuardTask", {}).get("Healthy", False)
+                    runtime_healthy = payload.get("RuntimeTask", {}).get("Healthy", False)
+                    profiles_healthy = payload.get("AllProfileIconsPatched", False)
+                    if payload.get("Ok") and payload.get("InstallStaged") and guard and runtime and guard_healthy and runtime_healthy and profiles_healthy and total > 0 and marked == total:
+                        text, color = f"已启用保护 · EXE {marked}/{total} · 两项任务正常", "#5D7A52"
+                    elif payload.get("Ok") and not total:
+                        text, color = "未检测到可处理的 Edge 安装", PINK_TEXT
+                    else:
+                        text, color = "未完全启用 · 可重新安装或查看日志", PINK_TEXT
+                    self.status_label.configure(text=text, text_color=color)
+                elif kind == "status_error":
+                    request_id, message = payload
+                    if not self.running and request_id == self._status_request_id:
+                        self.status_label.configure(text=message, text_color=PINK_TEXT)
+                        if self._verb == "安装" and self._last_result and self._last_result.get("Success"):
+                            self._show_operation_details(f"安装后状态核对失败：{message}")
+        except queue.Empty:
+            pass
+        self.after(120, self._poll_status)
+
     # --- 按钮回调 ---
     def on_install(self):
+        if not messagebox.askokcancel(
+            "确认安装",
+            "即将关闭所有 Edge 进程、备份原始图标资源、创建两个计划任务，"
+            "并重启 Windows 资源管理器。\n\n已保存的网页内容请先手动保存。",
+            icon="warning", parent=self,
+        ):
+            return
         self._start(INSTALL_PS1, "安装", with_variant=True)
 
     def on_uninstall(self):
+        if not messagebox.askokcancel(
+            "确认恢复",
+            "即将关闭所有 Edge 进程、停止图标常驻任务，并从备份恢复原始图标。\n\n确定继续吗？",
+            icon="warning", parent=self,
+        ):
+            return
         self._start(UNINSTALL_PS1, "卸载", with_variant=False)
 
     def _start(self, ps1, verb, with_variant=False):
         if self.running:
             return
         self._verb = verb
+        self._last_result = None
+        self._operation_error = None
+        self._operation_log = []
+        self._status_request_id += 1
         self._set_busy(True)
-
-        # 平滑进度：display 缓动追 target；忙碌时 target 自己朝 ceiling 慢慢爬，
-        # 即使脚本没吐新步骤也不会停滞。真实 [N/M] 只把 target 往上抬，绝不回退。
-        self._prog_display = 0.0
-        self._prog_target = 0.0
-        self._prog_ceiling = 0.90   # 完成前的软上限，留出 10% 给收尾，避免提前填满
-        self.progress.configure(mode="determinate")
-        self.progress.set(0)
-        self._anim_on = True
-        self._animate_progress()
+        self.status_label.configure(text=f"正在{verb}，请稍候…", text_color=PINK_SUBTLE)
 
         # 安装时把选中的变体作为 -Variant 传给 Install.ps1；卸载无需变体。
         extra_args = [("Variant", self._variant)] if with_variant else []
-        self._append_log(f"=== 开始{verb}喵 ===")
         t = threading.Thread(
             target=run_powershell, args=(ps1, self.queue, extra_args), daemon=True
         )
         t.start()
-
-    # --- 进度条缓动：每 ~30ms 一帧。display 指数缓动逼近 target；忙碌时 target
-    #     也朝 ceiling 缓慢爬升（爬升量随接近 ceiling 而递减，越接近越慢，永不骤停）。
-    def _animate_progress(self):
-        if not getattr(self, "_anim_on", False):
-            return
-        # 忙碌中：target 朝 ceiling 缓慢爬（慢心跳，给"一直在动"的心理暗示）
-        if self.running and self._prog_target < self._prog_ceiling:
-            self._prog_target += (self._prog_ceiling - self._prog_target) * 0.018
-        # display 缓动追 target（收尾更顺滑）
-        self._prog_display += (self._prog_target - self._prog_display) * 0.20
-        self.progress.set(max(0.0, min(1.0, self._prog_display)))
-        # 收尾：完成且基本填满则停帧，省 CPU
-        if not self.running and self._prog_display >= 0.999:
-            self.progress.set(1.0)
-            self._anim_on = False
-            return
-        self.after(30, self._animate_progress)
 
     # --- 轮询后台输出，刷新 UI（始终在主线程）---
     def _poll_queue(self):
         try:
             while True:
                 kind, payload = self.queue.get_nowait()
-                if kind == "line":
-                    self._append_log(payload)
-                    self._update_progress_from_line(payload)
+                if kind == "result":
+                    self._last_result = payload
+                elif kind == "log":
+                    self._operation_log.append(payload)
                 elif kind == "error":
-                    self._append_log("⚠ " + payload)
+                    self._operation_error = payload
                 elif kind == "done":
                     self._finish(payload)
         except queue.Empty:
             pass
         self.after(80, self._poll_queue)
 
-    def _update_progress_from_line(self, line):
-        m = STEP_RE.search(line)
-        if not m:
-            return
-        cur, total = int(m.group(1)), int(m.group(2))
-        if total <= 0:
-            return
-        # 真实步骤把 target 抬到对应比例（仍夹在 ceiling 下），且只升不降。
-        frac = min(self._prog_ceiling, cur / total)
-        if frac > self._prog_target:
-            self._prog_target = frac
-
     def _finish(self, returncode):
-        # 释放软上限，让缓动把进度顺滑推到 100%（动画帧里到 1.0 自动停）。
         self.running = False
-        self._prog_target = 1.0
-        self._prog_ceiling = 1.0
-        if not getattr(self, "_anim_on", False):
-            self._anim_on = True
-            self._animate_progress()
         self._set_busy(False)
-        if returncode == 0:
-            self._append_log(f"=== 任务完成喵（退出码 0）===")
-            self._append_log(f"=== 主人请稍等，任务栏重启可能需要一点时间喵～ ===")
+        operation_succeeded = returncode == 0 and self._last_result and self._last_result.get("Success")
+        if operation_succeeded:
+            if self._verb == "安装":
+                # The script result alone does not include the discovered EXE denominator.
+                # Verify the complete installed state before presenting success.
+                self._status_request_id += 1
+                request_id = self._status_request_id
+                threading.Thread(
+                    target=read_status,
+                    args=(STATUS_PS1, self.status_queue, request_id, True),
+                    daemon=True,
+                ).start()
+                self.status_label.configure(text="安装完成，正在核对保护状态…", text_color=PINK_SUBTLE)
+            else:
+                self.status_label.configure(
+                    text=self._last_result.get("Message", "操作完成。"), text_color=SUCCESS_GREEN
+                )
+        elif self._last_result and self._last_result.get("Partial"):
+            self.status_label.configure(
+                text=self._last_result.get("Message", "操作只部分完成。"), text_color=PINK_TEXT
+            )
         else:
-            self._append_log(f"=== 任务失败（退出码 {returncode}）===")
+            message = self._operation_error or f"操作失败（退出码 {returncode}）。"
+            self.status_label.configure(text=message, text_color=PINK_TEXT)
+        if not operation_succeeded:
+            self._show_operation_details()
+
+    def _show_operation_details(self, diagnostic=None):
+        """Expose full PowerShell output whenever an operation fails or is partial."""
+        details = "\n".join(self._operation_log).strip()
+        if self._operation_error:
+            details = (details + "\n\n" + self._operation_error).strip()
+        if diagnostic:
+            details = (details + "\n\n" + diagnostic).strip()
+        if not details:
+            details = self.status_label.cget("text")
+        win = ctk.CTkToplevel(self)
+        win.title(f"{self._verb}详细日志")
+        win.geometry("680x420")
+        win.transient(self)
+        box = ctk.CTkTextbox(win, wrap="word", font=ctk.CTkFont(family=FONT_FAMILY, size=12))
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+        box.insert("1.0", details)
+        box.configure(state="disabled")
 
 
 def main():
