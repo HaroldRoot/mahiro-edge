@@ -12,11 +12,11 @@
 
 **方式一：图形界面（推荐）**
 
-1. 下载 [Releases](https://github.com/HaroldRoot/mahiro-edge/releases) 里的 `Mahiro.exe`，另存为 `绪山真寻.exe`。
-2. 双击 `绪山真寻.exe`。
+1. 下载 [Releases](https://github.com/HaroldRoot/mahiro-edge/releases) 里的 `Mahiro_1.0.3_Windows_x64.exe`。
+2. 双击下载的 `.exe` 文件。
 3. 在「用户账户控制（UAC）」弹窗中选择「是」。
-4. 等待图形界面出现，在两张预览卡片里选好图标变体。
-5. 再点「安装呆毛图标」即可。
+4. 在「选择呆毛角度」中选好图标变体，查看左侧效果预览。
+5. 保存正在使用的 Edge 网页内容，再点「启用呆毛保护」。
 
 恢复原版图标方式：点击「恢复原版图标」按钮。
 
