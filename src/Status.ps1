@@ -6,9 +6,9 @@ param([switch]$AsJson)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $base = "$env:ProgramData\MahiroEdge"
-$module = Join-Path $base 'MahiroEdge.psm1'
+$module = Join-Path $here 'MahiroEdge.psm1'
 if (-not (Test-Path -LiteralPath $module)) {
-    $module = Join-Path $here 'MahiroEdge.psm1'
+    $module = Join-Path $base 'MahiroEdge.psm1'
 }
 
 function Get-TaskHealth {
@@ -64,6 +64,8 @@ $result = [ordered]@{
     InstallStaged = (Test-Path -LiteralPath (Join-Path $base 'oyama-mahiro-ahoge.ico'))
     ExeTotal = 0
     ExeMarked = 0
+    ExeDiscovered = 0
+    ExeNoIcon = 0
     AllExesPatched = $false
     ProfileIconTotal = 0
     ProfileIconPatched = 0
@@ -77,8 +79,11 @@ try {
     if (-not (Test-Path -LiteralPath $module)) { throw "找不到 MahiroEdge 模块: $module" }
     Import-Module $module -Force
     $exes = @(Find-EdgeExecutables)
-    $result.ExeTotal = $exes.Count
-    $result.ExeMarked = @($exes | Where-Object { Test-IsPatched -ExePath $_ }).Count
+    $patchableExes = @($exes | Where-Object { Test-HasIconResources -ExePath $_ })
+    $result.ExeDiscovered = $exes.Count
+    $result.ExeNoIcon = $exes.Count - $patchableExes.Count
+    $result.ExeTotal = $patchableExes.Count
+    $result.ExeMarked = @($patchableExes | Where-Object { Test-IsPatched -ExePath $_ }).Count
     $result.AllExesPatched = ($result.ExeTotal -gt 0 -and $result.ExeMarked -eq $result.ExeTotal)
     # 非公开 helper；在同一模块会话中可读取，用于只读状态展示。
     $profileIcons = @(Find-EdgeProfileIcons)
@@ -100,7 +105,8 @@ if ($AsJson) {
 }
 
 Write-Host "MahiroEdge 状态"
-Write-Host ("EXE 资源标记: {0}/{1}" -f $result.ExeMarked, $result.ExeTotal)
+Write-Host ("可补丁 EXE 资源标记: {0}/{1}（无图标资源跳过 {2}，共发现 {3}）" -f `
+    $result.ExeMarked, $result.ExeTotal, $result.ExeNoIcon, $result.ExeDiscovered)
 Write-Host ("配置图标: {0}" -f $result.ProfileIconTotal)
 Write-Host ("自愈任务: {0}" -f $result.GuardTask.State)
 Write-Host ("运行时任务: {0}" -f $result.RuntimeTask.State)

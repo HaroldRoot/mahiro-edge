@@ -2,8 +2,8 @@
 """绪山真寻 Edge 图标替换向导 — 图形界面
 
 这是现有 PowerShell 脚本的图形前端：它不重写任何核心逻辑，而是直接调用
-src/Install.ps1 与 src/Uninstall.ps1（保持命令行功能完全不变），并解析脚本
-打印的 [N/M] 步骤标记来驱动粉色进度条。UI 采用已确认的「换装工作台」方向：
+src/Install.ps1 与 src/Uninstall.ps1（保持命令行功能完全不变）。UI 采用
+已确认的「换装工作台」方向：
 深蓝预览台、纵向变体选择和单一主操作，日志按需展开。
 
 需要管理员权限：启动时检测，未提权则通过 UAC 自我提升后重启。
@@ -742,7 +742,7 @@ class MahiroEdgeApp(ctk.CTk):
                             diagnostics = [
                                 "安装后状态核对：",
                                 f"状态查询正常: {payload.get('Ok', False)}；暂存图标: {payload.get('InstallStaged', False)}",
-                                f"EXE 已标记: {marked}/{total}；配置图标已替换: {payload.get('ProfileIconPatched', 0)}/{payload.get('ProfileIconTotal', 0)}",
+                                f"可补丁 EXE 已标记: {marked}/{total}；无图标资源跳过: {payload.get('ExeNoIcon', 0)}；配置图标已替换: {payload.get('ProfileIconPatched', 0)}/{payload.get('ProfileIconTotal', 0)}",
                                 f"自愈任务: Healthy={guard.get('Healthy', False)}, State={guard.get('State', 'unknown')}, LastTaskResult={guard.get('LastTaskResult', 'unknown')}",
                                 f"运行时任务: Healthy={runtime.get('Healthy', False)}, State={runtime.get('State', 'unknown')}, ProcessAlive={runtime.get('ProcessAlive', False)}",
                             ]

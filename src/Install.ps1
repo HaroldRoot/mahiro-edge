@@ -104,9 +104,10 @@ Write-Host "[3/6] 改写 Edge 图标资源喵 ..."
 # 边界情形预判：补丁前先看是否所有 exe 早已是呆毛（重复安装）。用 -Force 仍会重写，
 # 但据此给用户一句明确的“本来就是呆毛”提示，而不是默默重跑。
 $preExes = Find-EdgeExecutables
-$preAll  = ($preExes.Count -gt 0) -and -not ($preExes | Where-Object { -not (Test-IsPatched -ExePath $_) })
+$prePatchable = @($preExes | Where-Object { Test-HasIconResources -ExePath $_ })
+$preAll  = ($prePatchable.Count -gt 0) -and -not ($prePatchable | Where-Object { -not (Test-IsPatched -ExePath $_) })
 $r = Invoke-Patch -IcoPath $icoPath -Force
-Write-Host ("补丁={0} 跳过={1} 失败={2} 共发现={3}" -f $r.Patched, $r.Skipped, $r.Failed, $r.Total) -ForegroundColor Cyan
+Write-Host ("补丁={0} 跳过={1} 无图标={2} 失败={3} 共发现={4}" -f $r.Patched, $r.Skipped, $r.NoIcon, $r.Failed, $r.Total) -ForegroundColor Cyan
 if ($preAll) {
     Write-Host "（检测到 Edge 图标此前已是呆毛，本次为重新确保应用——这是正常的幂等行为喵。）" -ForegroundColor Yellow
 }
@@ -169,6 +170,7 @@ $summary = [ordered]@{
     Success = -not $partial
     Partial = $partial
     ExePatched = $r.Patched
+    ExeNoIcon = $r.NoIcon
     ExeFailed = $r.Failed
     ProfilePatched = $r.ProfilePatched
     ProfileFailed = $r.ProfileFailed

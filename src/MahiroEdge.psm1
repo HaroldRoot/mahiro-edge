@@ -1,6 +1,6 @@
 ﻿# MahiroEdge.psm1 — 核心模块：发现 Edge、解析 .ico、改写 PE 图标资源、还原、刷新缓存
 # 公开函数：Find-EdgeExecutables / Get-IconImagesFromIco / Set-ExeIcon / Invoke-Patch /
-#           Invoke-Restore / Clear-IconCache / Test-IsPatched / Find-EdgeProfileIcons /
+#           Invoke-Restore / Clear-IconCache / Test-IsPatched / Test-HasIconResources / Find-EdgeProfileIcons /
 #           Set-ProfileIcon / Test-ProfileIconApplied / Get-SystemUptimeMinutes
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +33,9 @@ public static class ResApi {
     public static extern bool UpdateResource(IntPtr h, IntPtr type, IntPtr name, ushort lang, byte[] data, uint cb);
     [DllImport("kernel32", SetLastError=true)]
     public static extern bool EndUpdateResource(IntPtr h, bool discard);
+
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
 
     public const uint LOAD_LIBRARY_AS_DATAFILE = 0x2;
     public static readonly IntPtr RT_ICON = (IntPtr)3;
@@ -337,6 +340,11 @@ function Test-IsPatched {
     try { return [ResApi]::HasMarker($ExePath) } catch { return $false }
 }
 
+function Test-HasIconResources {
+    param([Parameter(Mandatory)][string]$ExePath)
+    return @([ResApi]::EnumGroups($ExePath)).Count -gt 0
+}
+
 # ============================================================
 # 发现所有用户的 Edge 每配置文件图标（Edge Profile.ico）。
 # Edge 把固定到任务栏 / 配置文件快捷方式的 IconLocation 显式指向这个 .ico；
@@ -630,16 +638,25 @@ function Clear-IconCache {
     $sessionExplorers = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId })
     $wasRunning = ($sessionExplorers.Count -gt 0)
     if ($wasRunning) {
+        $originalIds = @($sessionExplorers | Select-Object -ExpandProperty Id)
         foreach ($explorer in $sessionExplorers) {
             try { Stop-Process -Id $explorer.Id -Force -ErrorAction SilentlyContinue } catch {}
         }
-        # Wait for the process to release cache files instead of relying on a fixed delay.
+        # Windows may start a replacement shell immediately. Wait for the original PIDs,
+        # not for every explorer process in this session to disappear.
         $deadline = (Get-Date).AddSeconds(10)
-        while ((Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) -and (Get-Date) -lt $deadline) {
+        while ((Get-Process -Id $originalIds -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) -and (Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 100
         }
-        if (Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) {
+        if (Get-Process -Id $originalIds -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) {
             Write-Warning "无法停止 explorer；为避免删除仍被占用的缓存，本次跳过缓存清理。"
+            return
+        }
+        if (Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId }) {
+            # The shell restarted itself before its cache files could be removed.
+            # Ask Windows to invalidate icon and thumbnail caches in the new shell.
+            [ResApi]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+            Write-Host "[缓存] explorer 已自动重新启动，已通知 Windows 刷新图标缓存。"
             return
         }
     }
@@ -656,6 +673,6 @@ function Clear-IconCache {
 }
 
 Export-ModuleMember -Function Find-EdgeExecutables, Get-IconImagesFromIco, Set-ExeIcon, `
-    Invoke-Patch, Invoke-Restore, Clear-IconCache, Test-IsPatched, `
+    Invoke-Patch, Invoke-Restore, Clear-IconCache, Test-IsPatched, Test-HasIconResources, `
     Find-EdgeProfileIcons, Set-ProfileIcon, Test-ProfileIconApplied, `
     Get-SystemUptimeMinutes
