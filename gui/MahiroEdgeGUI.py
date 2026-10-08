@@ -626,7 +626,7 @@ class MahiroEdgeApp(ctk.CTk):
 
         # 版本号
         ctk.CTkLabel(
-            body, text="v1.0.2", 
+            body, text="v1.0.3",
             font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"), 
             text_color=PINK_TEXT
         ).pack(pady=(12, 2))
